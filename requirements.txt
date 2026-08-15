@@ -1,0 +1,19 @@
+# There are no dependencies.
+#
+# This file exists because people reasonably expect it, and its being empty is
+# the point rather than an oversight. WiFi Geolocation Forensics is written
+# against the CPython standard library alone: the protobuf codec, the PNG
+# encoder, the PDF writer, the HTTP client and the web server are all part of
+# the project.
+#
+#   pip install -r requirements.txt     installs nothing, and succeeds
+#   pip install .                       installs the tool and the `wifigeo` command
+#   python -m wifigeo                   runs it straight from a clone
+#
+# Why it matters here specifically: this tool produces evidence. A dependency
+# is a third party who can change what your evidence-generating code does
+# between one run and the next, and it has to be installed before the tool can
+# run at all. Neither is worth it for code that has to hold up under challenge.
+#
+# If you are adding a dependency, please read CONTRIBUTING.md first - there is
+# a process, and the answer is usually to write the twenty lines instead.

@@ -1,0 +1,84 @@
+name: Bug report
+description: Something the tool does wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before you write anything: redact your data
+
+        This tool's input is a real hardware address and its output is a real
+        physical location. **This issue tracker is public and indexed by search
+        engines.**
+
+        Please replace:
+
+        - hardware addresses with the documentation range `00:00:5E:00:53:xx`
+        - coordinates, Plus Codes, MGRS, UTM and geohashes with a neutral value
+          — these are all encodings of the same position, so redacting only the
+          decimal pair still publishes the location
+        - real network names, street addresses, hostnames and user paths
+
+        `python -m wifigeo --bssid <addr> --redact` produces a report that is
+        safe to attach.
+
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Redaction
+      options:
+        - label: I have removed real addresses, coordinates and network names from this report.
+          required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did the tool do, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The exact command, with your data redacted.
+      render: shell
+      placeholder: python -m wifigeo --bssid 00:00:5E:00:53:a6 --ssid Example
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or traceback
+      description: Paste the full output. Check it for real data first.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `python -m wifigeo --version`
+      placeholder: WiFi Geolocation Forensics 2.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - From a clone (python -m wifigeo)
+        - Installed with pip
+        - Portable ZIP (WGF.cmd)
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and Python version
+      placeholder: Windows 11 / Python 3.14.7, or Ubuntu 24.04 / Python 3.12
+    validations:
+      required: true

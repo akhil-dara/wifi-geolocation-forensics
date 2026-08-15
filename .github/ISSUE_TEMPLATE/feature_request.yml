@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest something the tool should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please note two standing constraints before suggesting:
+
+        - **No third-party dependencies.** The tool is pure standard library by
+          design, because its output is evidential. See CONTRIBUTING.md.
+        - **No API keys.** Every source it uses is credential-free, so that the
+          tool works on an isolated analysis host with no accounts.
+
+        Suggestions that need either are not automatically refused, but they
+        need a strong case.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the investigative situation, not the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should it do?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This can be done with the Python standard library alone.
+        - label: This needs no API key or account.

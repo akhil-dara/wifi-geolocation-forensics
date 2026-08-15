@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wifi-geolocation-forensics"
+version = "2.0.0"
+description = "Resolve a Wi-Fi access point to a geographic position, cross-validate it against two independent providers, and seal the result into a hash-verified evidence package."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+keywords = [
+    "dfir", "forensics", "geolocation", "wifi", "bssid", "osint",
+    "incident-response", "wardriving", "chain-of-custody",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Typing :: Typed",
+]
+
+# Intentionally empty, and intended to stay that way. The tool is pure CPython
+# standard library: no requests, no protobuf, no imaging or PDF library. That is
+# a design constraint rather than an accident - every package that is not here
+# is one more thing that cannot break the build, cannot bloat the portable
+# distribution, and cannot change what the tool does between one run and the
+# next. CI asserts this list stays empty.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/akhil-dara/wifi-geolocation-forensics"
+Source = "https://github.com/akhil-dara/wifi-geolocation-forensics"
+Issues = "https://github.com/akhil-dara/wifi-geolocation-forensics/issues"
+
+[project.scripts]
+wifigeo = "wifigeo.__main__:main"
+
+[tool.setuptools]
+# Explicit rather than discovered: automatic discovery in a flat layout also
+# picks up `tests` and `docs` and ships them inside the wheel.
+packages = ["wifigeo"]
+
+[tool.setuptools.package-data]
+# NOT optional. wifigeo/app.py resolves the interface directory relative to
+# __file__, so without this a wheel contains no web assets at all and
+# `pip install wifi-geolocation-forensics` produces a tool whose UI answers
+# {"error": "not found"} on every request. Verified by building a wheel and
+# installing it into a clean virtual environment.
+wifigeo = ["web/*"]
+
+[tool.pytest.ini_options]
+# The suite is plain unittest and runs under `python -m unittest discover -s
+# tests` with no third-party packages at all. These settings are only so that
+# `pytest` also works for contributors who prefer it.
+testpaths = ["tests"]
+python_files = ["test_*.py"]

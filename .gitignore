@@ -1,0 +1,8 @@
+evidence/
+private/
+
+__pycache__/
+.venv/
+.vscode/
+.idea/
+.claude/

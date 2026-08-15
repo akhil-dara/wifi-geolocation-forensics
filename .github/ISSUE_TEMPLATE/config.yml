@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/akhil-dara/wifi-geolocation-forensics/security/advisories/new
+    about: Report privately, not as a public issue. See SECURITY.md.

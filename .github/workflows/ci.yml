@@ -1,0 +1,261 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # No `pip install` step anywhere in this job, deliberately. The suite runs
+      # against a bare interpreter, which is what proves the zero-dependency
+      # claim rather than merely asserting it.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Import every module
+        run: |
+          python -c "import importlib; [importlib.import_module('wifigeo.'+m) for m in 'apple msft proto net scan ingest etl geo osint oui evidence redact png pdf fmt report reportpdf mapimage assets engine app'.split()]; print('all modules import')"
+
+      # These must work with no network and no wireless radio.
+      - name: Command line contract
+        shell: bash
+        run: |
+          set -e
+          python -m wifigeo --version
+          python -m wifigeo --help > /dev/null
+          # An unparseable address must fail loudly, not fall through to the
+          # web interface - which looks exactly like the tool hanging.
+          if python -m wifigeo --bssid not-a-mac 2>/dev/null; then
+            echo "::error::--bssid with an invalid address should exit non-zero"
+            exit 1
+          fi
+          if python -m wifigeo --import does-not-exist.json 2>/dev/null; then
+            echo "::error::--import with a missing file should exit non-zero"
+            exit 1
+          fi
+
+      - name: Radio scan degrades without a radio
+        run: python -m wifigeo --scan
+
+  zero-dependencies:
+    name: zero dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: requirements.txt declares nothing
+        run: |
+          if grep -qvE '^\s*(#.*)?$' requirements.txt; then
+            echo "::error::requirements.txt has a real requirement in it."
+            echo "This project is pure standard library by design - see CONTRIBUTING.md."
+            grep -nvE '^\s*(#.*)?$' requirements.txt
+            exit 1
+          fi
+          echo "requirements.txt is empty of requirements, as intended"
+
+      - name: No third-party imports in the package
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+          stdlib = set(sys.stdlib_module_names)
+          bad = []
+          for f in pathlib.Path("wifigeo").rglob("*.py"):
+              for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      names = [node.module.split(".")[0]]
+                  for n in names:
+                      if n and n not in stdlib and n != "wifigeo":
+                          bad.append("%s: %s" % (f, n))
+          if bad:
+              print("::error::third-party import found:")
+              print("\n".join(bad))
+              raise SystemExit(1)
+          print("every import is standard library")
+          PY
+
+      - name: Built wheel declares no dependencies
+        run: |
+          python -m pip install --quiet build
+          python -m build --wheel --outdir dist_ci
+          python - <<'PY'
+          import glob, zipfile, sys
+          whl = glob.glob("dist_ci/*.whl")[0]
+          meta = [n for n in zipfile.ZipFile(whl).namelist() if n.endswith("METADATA")][0]
+          text = zipfile.ZipFile(whl).read(meta).decode("utf-8")
+          reqs = [l for l in text.splitlines() if l.startswith("Requires-Dist:")]
+          if reqs:
+              print("::error::wheel declares dependencies: %s" % reqs)
+              raise SystemExit(1)
+          print("wheel declares no dependencies")
+          PY
+
+  packaging:
+    name: pip install ships a working UI
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # wifigeo/app.py resolves its interface directory relative to __file__,
+      # so a wheel missing package-data installs a tool whose UI 404s on every
+      # request. That shipped once; this job is why it cannot ship again.
+      - name: Install from a built wheel into a clean environment
+        shell: bash
+        run: |
+          python -m pip install --quiet build
+          python -m build --wheel --outdir dist_ci
+          python -m venv fresh
+          if [ -d fresh/Scripts ]; then PY=fresh/Scripts/python; else PY=fresh/bin/python; fi
+          "$PY" -m pip install --quiet dist_ci/*.whl
+          "$PY" - <<'PY'
+          import os, sys
+          from wifigeo import app
+          need = {"index.html", "app.css", "app.js"}
+          have = set(os.listdir(app.WEB_DIR)) if os.path.isdir(app.WEB_DIR) else set()
+          missing = need - have
+          if missing:
+              print("::error::wheel is missing web assets: %s" % sorted(missing))
+              raise SystemExit(1)
+          print("web assets present:", sorted(have))
+          PY
+
+      - name: Console script is on PATH and runs
+        shell: bash
+        run: |
+          if [ -d fresh/Scripts ]; then BIN=fresh/Scripts; else BIN=fresh/bin; fi
+          "$BIN/wifigeo" --version
+
+      # Case evidence must never land inside a directory pip owns: an upgrade
+      # or an uninstall would delete it. site-packages is writable in a venv,
+      # so a plain write test is not enough to catch this.
+      - name: Installed copy does not write evidence into site-packages
+        shell: bash
+        run: |
+          if [ -d fresh/Scripts ]; then PY="$PWD/fresh/Scripts/python"; else PY="$PWD/fresh/bin/python"; fi
+          cd "$(mktemp -d)"
+          "$PY" - <<'PY'
+          from wifigeo.__main__ import _default_evidence_root, _is_installed
+          root = _default_evidence_root()
+          print("is_installed :", _is_installed())
+          print("evidence root:", root)
+          low = root.lower()
+          if "site-packages" in low or "dist-packages" in low:
+              print("::error::an installed copy would write evidence into the "
+                    "installation directory, where pip will destroy it")
+              raise SystemExit(1)
+          if not _is_installed():
+              print("::error::an installed copy did not detect that it is installed")
+              raise SystemExit(1)
+          PY
+
+  hygiene:
+    name: no placeholders, no real identifiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The project URL is sent to Nominatim and Overpass on every enrichment
+      # request; their usage policies require a genuine identifying URL, and an
+      # unidentified bot gets rate-limited. Shipping the placeholder would break
+      # the address and places lookups for everyone.
+      # The patterns are split so this file does not match itself - a check that
+      # greps for a literal it also contains can never pass. assets.py is
+      # excluded because its base64 blobs false-positive on almost any string.
+      - name: No unresolved placeholders
+        run: |
+          pat1='YOUR-GITHUB''-USERNAME'
+          pat2='<yo''u>'
+          hits=$(grep -rn --exclude-dir=.git --exclude=assets.py \
+                   --exclude-dir=build --exclude-dir='*.egg-info' \
+                   -e "$pat1" -e "$pat2" . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::unresolved placeholder - set the real project URL in"
+            echo "wifigeo/__init__.py (PROJECT_URL) and pyproject.toml before release."
+            echo "It is sent to Nominatim and Overpass on every enrichment request,"
+            echo "and their usage policies require a genuine identifying URL."
+            echo "$hits"
+            exit 1
+          fi
+
+      # Every MAC in a published file must come from the range RFC 7042 s2.1.2
+      # reserves for documentation, or be an all-zero control address. A real
+      # vendor OUI here means somebody's actual hardware is being published.
+      - name: No real hardware addresses in tracked files
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+          MAC = re.compile(r"\b([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})\b")
+          ALLOWED = (
+              # RFC 7042 s2.1.2 reserves this range for documentation.
+              "00:00:5e:00:53", "00-00-5e-00-53",
+              # The same range with the locally-administered bit set. Needed to
+              # exercise multi-BSSID guest radios, and still not real hardware.
+              "02:00:5e:00:53", "02-00-5e-00-53",
+              # The synthetic sequence used in the protocol tests.
+              "00:1a:2b", "00-1a-2b",
+              # Structural addresses that cannot identify a device: all-zero,
+              # broadcast, and the IPv4/IPv6 multicast prefixes the ingester
+              # excludes as junk.
+              "00:00:00:00:00", "00-00-00-00-00",
+              "ff:ff:ff:ff:ff", "01:00:5e:00:00", "33:33:00:00:00",
+              # The conventional "any MAC" placeholder used in format docstrings.
+              "aa:bb:cc:dd:ee:ff",
+          )
+          TEXT = (".md", ".py", ".html", ".js", ".css", ".ps1", ".yml",
+                  ".yaml", ".txt", ".json", ".xml")
+          files = subprocess.run(["git", "ls-files"], capture_output=True,
+                                 text=True, check=True).stdout.split()
+          bad = []
+          for f in files:
+              if not f.endswith(TEXT):
+                  continue
+              try:
+                  text = open(f, encoding="utf-8", errors="replace").read()
+              except OSError:
+                  continue
+              for m in MAC.finditer(text):
+                  v = m.group(1).lower()
+                  if not any(v.startswith(a) for a in ALLOWED):
+                      line = text[:m.start()].count("\n") + 1
+                      bad.append("%s:%d: %s" % (f, line, m.group(1)))
+          if bad:
+              print("::error::real-looking MAC address in a published file.")
+              print("Use the RFC 7042 documentation range 00:00:5E:00:53:xx instead.")
+              print("\n".join(bad))
+              raise SystemExit(1)
+          print("no real hardware addresses found")
+          PY

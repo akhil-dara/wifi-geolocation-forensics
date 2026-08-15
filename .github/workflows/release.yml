@@ -1,0 +1,287 @@
+name: Release
+
+# Pushing a version tag publishes a release. Nothing else does - a plain push
+# to master builds and tests, but never publishes.
+#
+#   git tag -a v2.0.0 -m "..."
+#   git push origin v2.0.0
+#
+# Run it manually from the Actions tab to build the artefacts without
+# publishing anything, which is the way to check a packaging change.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # required to create the release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_RUNTIME: "3.14.7"   # the CPython embedded in the portable build
+
+jobs:
+  # A tag that disagrees with the version in the code produces a release whose
+  # assets are named after a different version than the tag. Cheap to check,
+  # confusing to discover later.
+  check:
+    name: tag matches the version in the code
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          set -e
+          python3 - <<'PY' > version.txt
+          import pathlib, re
+          src = pathlib.Path("wifigeo/__init__.py").read_text(encoding="utf-8")
+          m = re.search(r"""__version__\s*=\s*['"]([^'"]+)['"]""", src)
+          if not m:
+              raise SystemExit("::error::no __version__ in wifigeo/__init__.py")
+          print(m.group(1))
+          PY
+          version=$(cat version.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code says: $version"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "tag says : $tag"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match __version__ $version in wifigeo/__init__.py"
+              exit 1
+            fi
+          fi
+
+  # The published tests are the gate. A release that skips them is a release
+  # nobody checked.
+  test:
+    name: tests before publishing
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests
+
+  portable:
+    name: portable Windows build
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No setup-python here on purpose. The build downloads its own runtime,
+      # so this job proves the package works on a machine with no Python -
+      # which is the whole claim the portable build makes.
+      - name: Build
+        shell: pwsh
+        run: .github/scripts/build_portable.ps1 -PythonVersion "${{ env.PYTHON_RUNTIME }}" -OutputDir dist
+
+      # Inspect the archive itself before extracting. Running anything inside an
+      # extracted copy writes bytecode into it, which then looks like the ZIP
+      # shipped bytecode - so the contents are judged from the entry list.
+      - name: The published ZIP contains only what it should
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $names = [IO.Compression.ZipFile]::OpenRead($zip.FullName).Entries.FullName
+          $bad = $names | Where-Object { $_ -match '__pycache__|\.pyc$' }
+          if ($bad) { throw "bytecode in the published ZIP: $($bad[0])" }
+          $priv = $names | Where-Object { $_ -match '(?i)networklist|Wifi\.etl|/private/|\.claude' }
+          if ($priv) { throw "private material in the published ZIP: $($priv[0])" }
+          foreach ($need in 'WGF/wifigeo/__main__.py','WGF/wifigeo/web/index.html',
+                            'WGF/WGF.cmd','WGF/START-HERE.txt','WGF/LICENSE') {
+            if ($names -notcontains $need) { throw "missing from the ZIP: $need" }
+          }
+          Write-Host "ZIP contents clean: $($names.Count) entries"
+
+      - name: The published ZIP actually runs
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath check
+          $exe = "check/WGF/runtime/python.exe"
+          if (-not (Test-Path $exe)) { throw "no runtime in the published ZIP" }
+          & $exe -B -m wifigeo --version
+          if ($LASTEXITCODE -ne 0) { throw "the published ZIP does not run" }
+          & $exe -B -m wifigeo --help > $null
+          if ($LASTEXITCODE -ne 0) { throw "--help failed in the published ZIP" }
+          Write-Host "published ZIP runs on a machine with no Python"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  distributions:
+    name: wheel and sdist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet build
+      - run: python -m build --outdir dist
+
+      - name: Wheel declares no dependencies and carries the interface
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          z = zipfile.ZipFile(whl)
+          meta = [n for n in z.namelist() if n.endswith("METADATA")][0]
+          reqs = [l for l in z.read(meta).decode().splitlines()
+                  if l.startswith("Requires-Dist:")]
+          if reqs:
+              raise SystemExit("::error::wheel declares dependencies: %s" % reqs)
+          web = {n.split("/")[-1] for n in z.namelist() if "/web/" in n}
+          missing = {"index.html", "app.css", "app.js"} - web
+          if missing:
+              raise SystemExit("::error::wheel is missing web assets: %s" % sorted(missing))
+          print("wheel is clean:", whl)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: [check, portable, distributions]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      # A forensics tool that publishes unverifiable downloads would be a poor
+      # advertisement for itself.
+      #
+      # Both the checksums and the notes are built in Python and handed to gh
+      # as a FILE. Nothing generated here is interpolated into a shell command.
+      # A ${{ }} expression is pasted in textually before bash parses the line,
+      # so a backtick in the notes - and the notes are Markdown, they are full
+      # of backticks - becomes command substitution. That is how an earlier run
+      # executed pip install and pasted its help output into the release notes,
+      # and it would just as happily run anything backticked in CHANGELOG.md.
+      - name: Checksums and release notes
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          RUNTIME: ${{ env.PYTHON_RUNTIME }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, re
+
+          NL = chr(10)
+          version = os.environ["VERSION"]
+          runtime = os.environ["RUNTIME"]
+          assets = pathlib.Path("assets")
+
+          rows, sums = [], []
+          for f in sorted(assets.iterdir()):
+              if not f.is_file() or f.name == "SHA256SUMS.txt":
+                  continue
+              digest = hashlib.sha256(f.read_bytes()).hexdigest()
+              sums.append("%s  %s" % (digest, f.name))
+              size = f.stat().st_size
+              human = ("%.1f MB" % (size / 1048576) if size >= 1048576
+                       else "%.0f KB" % (size / 1024))
+              rows.append("| `%s` | %s | `%s` |" % (f.name, human, digest))
+
+          if not rows:
+              raise SystemExit("::error::no assets were downloaded to publish")
+          (assets / "SHA256SUMS.txt").write_text(NL.join(sums) + NL, encoding="utf-8")
+
+          zip_name = "WGF-%s-win64.zip" % version
+          whl = next((f.name for f in assets.iterdir() if f.suffix == ".whl"),
+                     "the wheel")
+
+          out = ["## Which download",
+                 "",
+                 "| You want to | Take |",
+                 "|---|---|",
+                 "| Run it on Windows with nothing installed | `%s` |" % zip_name,
+                 "| Install it with pip | `pip install %s` |" % whl,
+                 "",
+                 "The portable ZIP carries its own CPython %s. Extract it anywhere, run"
+                 " `WGF.cmd`, and nothing is installed and nothing touches the registry."
+                 " No API keys, no accounts, and no third-party Python packages." % runtime,
+                 ""]
+
+          changelog = pathlib.Path("CHANGELOG.md")
+          if changelog.exists():
+              text = changelog.read_text(encoding="utf-8")
+              head = re.search(r"^#+\s*\[?v?" + re.escape(version) + r"\]?", text, re.M)
+              if head:
+                  # Drop the remainder of the heading line, or the release date
+                  # that follows the version dangles at the top of the section.
+                  rest = text[head.end():]
+                  rest = rest.split(NL, 1)[1] if NL in rest else ""
+                  nxt = re.search(r"^#+\s*\[?v?[0-9]", rest, re.M)
+                  body = (rest[:nxt.start()] if nxt else rest).strip()
+                  if body:
+                      out += ["## Changes", "", body, ""]
+
+          out += ["## Verifying a download",
+                  "",
+                  "```bash",
+                  "sha256sum -c SHA256SUMS.txt",
+                  "```",
+                  "",
+                  "| Asset | Size | SHA-256 |",
+                  "|---|---|---|"]
+          out += rows
+          out.append("")
+
+          pathlib.Path("notes.md").write_text(NL.join(out), encoding="utf-8")
+          print("%d assets" % len(rows))
+          print(NL.join(sums))
+          PY
+          echo "--- notes.md ---"
+          cat notes.md
+
+      # Re-running a tag has to repair the release rather than fail on it.
+      # Moving a tag re-fires this workflow, and gh release create errors out
+      # if the release already exists - which would leave a bad release in
+      # place with no way to replace it from CI.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "release $tag exists - replacing its notes and assets"
+            gh release edit "$tag" --title "$tag" --notes-file notes.md
+            gh release upload "$tag" assets/* --clobber
+          else
+            echo "creating release $tag"
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file notes.md \
+              --verify-tag \
+              assets/*
+          fi
+          gh release view "$tag" --json name,assets \
+            --jq '"published \(.name) with \(.assets|length) assets"'

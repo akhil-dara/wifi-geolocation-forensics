@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" data-token="__WGF_TOKEN__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi Geolocation Forensics</title>
+<link rel="stylesheet" href="assets/app.css">
+<link rel="icon" href="assets/icon.png">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">
+    <img class="ring" src="assets/logo.png" alt="">
+    <span class="wordmark">WiFi Geolocation Forensics</span>
+    <span class="tag">Independent cross-validated positioning</span>
+  </div>
+  <div class="topmeta">
+    <span id="envPill" class="pill">initialising</span>
+    <span class="pill ghost" id="verPill"></span>
+  </div>
+</header>
+
+<main class="shell">
+
+  <!-- ================= sidebar ================= -->
+  <aside class="panel">
+    <form id="runForm" autocomplete="off">
+
+      <section class="block">
+        <h2 class="blockhead">What to look up</h2>
+
+        <div class="modes" role="tablist">
+          <button type="button" class="mode on" id="modeSingle" role="tab"
+                  aria-selected="true">Single</button>
+          <button type="button" class="mode" id="modeBulk" role="tab"
+                  aria-selected="false">Bulk</button>
+        </div>
+
+        <div id="paneSingle">
+          <label class="lab" for="target">Access point address (BSSID)</label>
+          <input id="target" name="target" type="text"
+                 placeholder="00:00:5e:00:53:a6"
+                 spellcheck="false">
+
+          <!-- The only route from a name to an address. Neither provider
+               accepts a network name, so this machine's radio has to find it. -->
+          <button type="button" id="scanBtn" class="nearby">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M5 12.5a9 9 0 0 1 14 0M8 16a5 5 0 0 1 8 0"/><circle cx="12" cy="19.5" r="1.2" fill="currentColor" stroke="none"/>
+            </svg>
+            Find it by name &mdash; nearby networks
+          </button>
+          <p class="hint" id="targetHint">Windows only. Lists what the radio can
+            hear now; pick one and its address fills the box.</p>
+          <div id="netList" class="netlist" hidden></div>
+
+          <label class="lab" for="known_ssid">Name for the report (optional)</label>
+          <input id="known_ssid" type="text" placeholder="e.g. Reception-WiFi">
+          <p class="hint">Neither service returns network names, so this is
+            recorded as your assertion. In Bulk the names come from the file
+            instead, one per network.</p>
+
+          <details class="help" id="ctxBlock">
+            <summary>Everything else you could see at the time (optional)</summary>
+            <p class="hint">Not extra targets. Microsoft answers &ldquo;where is
+              a device that can see all of these at once&rdquo;, so the rest of
+              the scan the address was seen in makes the position for
+              <em>that one address</em> markedly tighter.</p>
+
+            <div class="filerow">
+              <input type="file" id="contextFile"
+                     accept=".txt,.log">
+              <button type="button" class="mini" id="ctxPickBtn">Choose file…</button>
+              <span id="ctxFileName" class="filename">no file chosen</span>
+            </div>
+
+            <div class="orbar"><span>or paste the scan</span></div>
+
+            <textarea id="contextText" rows="4" spellcheck="false"
+              placeholder="Paste the whole output of&#10;  netsh wlan show networks mode=bssid&#10;  nmcli -f BSSID,SSID,SIGNAL device wifi list"></textarea>
+            <div class="btnrow">
+              <button type="button" class="mini" id="ctxReadBtn">Read it</button>
+            </div>
+            <p class="hint" id="ctxHint">Nothing added yet.</p>
+          </details>
+        </div>
+
+        <div id="paneBulk" hidden>
+          <label class="lab" for="artefactFile">Read a saved scan</label>
+          <div class="filerow">
+            <input type="file" id="artefactFile"
+                   accept=".txt">
+            <button type="button" class="mini" id="pickBtn">Choose file…</button>
+            <span id="fileName" class="filename">no file chosen</span>
+          </div>
+          <p class="hint" id="importHint">Saved <code>netsh wlan show
+            networks</code> output, or a plain list of addresses.</p>
+
+          <div class="orbar"><span>or paste it</span></div>
+
+          <label class="lab" for="bssids">Paste the output, or a list of addresses</label>
+          <textarea id="bssids" rows="4" spellcheck="false"
+            placeholder="Paste netsh output, or addresses one per line:&#10;&#10;00:00:5e:00:53:a6  -52  Office 2.4GHz&#10;00-00-5e-00-53-a7  -61  Office 5GHz"></textarea>
+          <p class="hint" id="pasteHint">Whatever you paste is read the same way
+            a chosen file is; it will say what it found.</p>
+
+          <details class="help">
+            <summary>Give it a path instead</summary>
+            <p class="hint">For a file too large for the browser, or one on a
+              mapped drive.</p>
+            <div class="btnrow">
+              <input id="artefactPath" type="text" spellcheck="false"
+                     placeholder="D:\cases\OP-2291\scan.txt">
+              <button type="button" class="mini" id="importBtn">Read</button>
+            </div>
+          </details>
+
+          <div id="obsList" class="netlist" hidden></div>
+        </div>
+
+        <!-- What is about to happen, in words, before the button is pressed. -->
+        <div id="plan" class="plan">
+          <b id="planWhat">Nothing to look up yet</b>
+          <span id="planGets">Paste an access point address, or use
+            &ldquo;Find it by name&rdquo; to have the radio look one up.</span>
+        </div>
+
+        <button type="submit" id="runBtn" class="run">Locate</button>
+
+        <details class="help">
+          <summary>I do not have an address yet</summary>
+          <p class="hint">Run one of these and copy an address out of it.</p>
+          <div class="cmd"><span class="os">Windows</span>
+            <code>netsh wlan show networks mode=bssid</code>
+            <button type="button" class="copy" title="Copy">Copy</button></div>
+          <div class="cmd"><span class="os">Linux</span>
+            <code>nmcli -f BSSID,SSID,SIGNAL device wifi list</code>
+            <button type="button" class="copy" title="Copy">Copy</button></div>
+          <div class="cmd"><span class="os">macOS</span>
+            <code>system_profiler SPAirPortDataType</code>
+            <button type="button" class="copy" title="Copy">Copy</button></div>
+          <p class="hint">Save the output to a file and read it in Bulk, or
+            just paste it.</p>
+        </details>
+      </section>
+
+      <details class="block">
+        <summary>Case details</summary>
+        <div class="grid2">
+          <div><label class="lab" for="examiner">Examiner</label>
+            <input id="examiner" name="examiner" type="text" placeholder="your name"></div>
+          <div><label class="lab" for="reference">Your reference</label>
+            <input id="reference" name="reference" type="text" placeholder="e.g. OP-2291"></div>
+        </div>
+        <label class="lab" for="organisation">Organisation</label>
+        <input id="organisation" name="organisation" type="text" placeholder="unit / company">
+        <label class="lab" for="notes">Notes</label>
+        <textarea id="notes" name="notes" rows="2"
+                  placeholder="context for this enquiry"></textarea>
+      </details>
+
+      <details class="block">
+        <summary>Options</summary>
+        <div class="checks">
+          <label><input type="checkbox" id="use_microsoft" checked>
+            <span>Cross-check against Microsoft</span></label>
+          <label><input type="checkbox" id="use_enrichment" checked>
+            <span>Address, places and elevation</span></label>
+          <label><input type="checkbox" id="fetch_tiles" checked>
+            <span>Embed map imagery in the report</span></label>
+          <label><input type="checkbox" id="use_corroborating" checked>
+            <span>Query additional open datasets</span></label>
+          <label><input type="checkbox" id="redact">
+            <span>Also write a redacted copy
+              <em>(the evidence package is never redacted)</em></span></label>
+          <label><input type="checkbox" id="active_scan">
+            <span>Active radio scan
+              <em>(transmits; changes the local RF environment)</em></span></label>
+          <label><input type="checkbox" id="send_device_profile">
+            <span>Send a DeviceProfile
+              <em>(identifies this machine to Microsoft)</em></span></label>
+        </div>
+        <details class="help">
+          <summary>Collection parameters</summary>
+          <label class="lab" for="neighbours">Neighbouring access points to harvest</label>
+          <div class="rangerow">
+            <input id="neighbours" name="neighbours" type="range" min="1" max="400"
+                   step="1" value="400">
+            <output id="neighboursOut">400</output>
+          </div>
+          <label class="lab" for="replicates">Independent replicate groups</label>
+          <div class="rangerow">
+            <input id="replicates" type="range" min="0" max="8" step="1" value="4">
+            <output id="replicatesOut">4</output>
+          </div>
+          <label class="lab" for="tile_zoom">Report map detail</label>
+          <div class="rangerow">
+            <input id="tile_zoom" name="tile_zoom" type="range" min="14" max="19"
+                   step="1" value="17">
+            <output id="zoomOut">17</output>
+          </div>
+          <label class="lab" for="poi_radius_m">Points-of-interest radius (m)</label>
+          <input id="poi_radius_m" name="poi_radius_m" type="number" min="50"
+                 max="1000" step="50" value="200">
+          <label class="lab" for="observed_at">Observation time, if not now</label>
+          <input id="observed_at" type="text" spellcheck="false"
+                 placeholder="2025-09-21T11:59:23+00:00">
+          <label class="lab" for="msft_api_version">Microsoft endpoint version</label>
+          <select id="msft_api_version">
+            <option value="v22">v22 (current)</option>
+            <option value="v21">v21 (legacy)</option>
+          </select>
+        </details>
+      </details>
+    </form>
+  </aside>
+
+  <!-- ================= stage ================= -->
+  <section class="stage">
+
+    <div id="idle" class="idle">
+      <div class="idle-art">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <h1>Locate a wireless network</h1>
+      <p>Resolves an SSID or BSSID to a geographic position using two
+         independent, credential-free positioning databases, cross-validates
+         them against each other, and seals everything it touches into a
+         verifiable evidence package.</p>
+      <ul class="idle-points">
+        <li><b>Apple Location Services</b> &mdash; per-access-point positions plus
+            up to 400 neighbouring access points</li>
+        <li><b>Microsoft inference service</b> &mdash; an independent position from
+            the observed beacon fingerprint, with IP-fallback answers detected
+            and discarded</li>
+        <li><b>OpenStreetMap</b> &mdash; address, nearby places, elevation, timezone
+            and map imagery embedded for offline viewing</li>
+      </ul>
+    </div>
+
+    <div id="progress" class="progress" hidden>
+      <div class="prog-head">
+        <div>
+          <h2 id="progPhase">Working</h2>
+          <p id="progMsg">Starting</p>
+        </div>
+        <div class="prog-pct" id="progPct">0%</div>
+      </div>
+      <div class="prog-track"><span id="progBar"></span></div>
+      <ol class="log" id="log"></ol>
+    </div>
+
+    <div id="results" class="results" hidden></div>
+  </section>
+</main>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
